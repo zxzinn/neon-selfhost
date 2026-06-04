@@ -1,0 +1,14 @@
+# Binaries
+/neon-selfhost
+/dist/
+*.exe
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

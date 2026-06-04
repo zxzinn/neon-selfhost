@@ -1,0 +1,11 @@
+apiVersion: v2
+name: neon
+description: Self-hosted Neon storage stack (pageserver, safekeepers, broker, S3) for dev branching
+type: application
+version: 0.1.0
+appVersion: "latest"
+keywords:
+  - neon
+  - postgres
+  - branching
+home: https://github.com/zxzinn/neon-selfhost

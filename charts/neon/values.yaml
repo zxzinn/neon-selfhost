@@ -1,0 +1,60 @@
+# Neon storage stack values.
+
+# StorageClass for all PVCs (pageserver/safekeeper/seaweedfs). Empty uses the
+# cluster default; set explicitly when multiple default classes exist.
+storageClass: ""
+
+# Container image used by all storage components (pageserver/safekeeper/broker).
+image:
+  repository: ghcr.io/neondatabase/neon
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# S3 backend for page/WAL durability.
+# Set seaweedfs.enabled=false to use an external S3 (fill `s3` below).
+seaweedfs:
+  enabled: true
+  image: chrislusf/seaweedfs:latest
+  # image used by the bucket-init Job (needs aws cli for the S3 API)
+  initImage: amazon/aws-cli:latest
+  # storage for the all-in-one server (master+volume+filer+s3)
+  storage: 10Gi
+  # bucket auto-created on startup
+  bucket: neon
+
+# S3 connection. When seaweedfs.enabled=true these are derived from the
+# in-chart SeaweedFS and you normally leave them as-is. When disabled, point
+# them at your external S3.
+s3:
+  # endpoint is templated to the in-chart service when seaweedfs.enabled.
+  endpoint: ""
+  region: us-east-1
+  bucket: neon
+  accessKey: any
+  secretKey: anysecret
+
+pageserver:
+  replicas: 1
+  storage: 10Gi
+  resources: {}
+  # http API port (CLI talks to this), and pg protocol port
+  httpPort: 9898
+  pgPort: 6400
+
+safekeeper:
+  # Neon recommends 3 for Paxos fault tolerance. Lower to 1 for a minimal dev
+  # stack.
+  replicas: 3
+  storage: 5Gi
+  resources: {}
+  httpPort: 7676
+  pgPort: 5454
+
+broker:
+  port: 50051
+
+# Scheduling applied to all storage pods. Left empty so the scheduler is free;
+# fill to pin (e.g. nodeSelector to a worker node).
+nodeSelector: {}
+tolerations: []
+affinity: {}

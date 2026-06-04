@@ -1,0 +1,120 @@
+{{- if .Values.seaweedfs.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "neon.fullname" . }}-seaweedfs
+  labels:
+    {{- include "neon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: seaweedfs
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: seaweedfs
+  ports:
+    - name: s3
+      port: 8333
+      targetPort: 8333
+    - name: master
+      port: 9333
+      targetPort: 9333
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "neon.fullname" . }}-seaweedfs
+  labels:
+    {{- include "neon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: seaweedfs
+spec:
+  serviceName: {{ include "neon.fullname" . }}-seaweedfs
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: seaweedfs
+  template:
+    metadata:
+      labels:
+        {{- include "neon.labels" . | nindent 8 }}
+        app.kubernetes.io/component: seaweedfs
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: seaweedfs
+          image: {{ .Values.seaweedfs.image }}
+          # all-in-one server with S3 gateway; seed creds via env
+          args:
+            - server
+            - -dir=/data
+            - -s3
+            - -s3.port=8333
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              value: {{ .Values.s3.accessKey | quote }}
+            - name: AWS_SECRET_ACCESS_KEY
+              value: {{ .Values.s3.secretKey | quote }}
+          ports:
+            - containerPort: 8333
+              name: s3
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- include "neon.storageClass" . | nindent 8 }}
+        resources:
+          requests:
+            storage: {{ .Values.seaweedfs.storage }}
+---
+# Create the bucket once SeaweedFS is up.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "neon.fullname" . }}-seaweedfs-init
+  labels:
+    {{- include "neon.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 20
+  template:
+    metadata:
+      labels:
+        {{- include "neon.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        # Create the bucket via the S3 API (authenticated). weed shell is
+        # interactive and unreliable from a separate pod, so we use aws-cli.
+        - name: mkbucket
+          image: {{ .Values.seaweedfs.initImage | default "amazon/aws-cli:latest" }}
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              value: {{ .Values.s3.accessKey | quote }}
+            - name: AWS_SECRET_ACCESS_KEY
+              value: {{ .Values.s3.secretKey | quote }}
+          command:
+            - sh
+            - -c
+            - |
+              ENDPOINT="http://{{ include "neon.fullname" . }}-seaweedfs:8333"
+              echo "waiting for seaweedfs s3 gateway at $ENDPOINT ..."
+              until aws --endpoint-url "$ENDPOINT" s3 ls >/dev/null 2>&1; do sleep 3; done
+              # idempotent: mb on an existing bucket is a no-op success path here
+              aws --endpoint-url "$ENDPOINT" s3 mb "s3://{{ .Values.seaweedfs.bucket }}" 2>&1 || true
+              aws --endpoint-url "$ENDPOINT" s3 ls | grep -q " {{ .Values.seaweedfs.bucket }}$" \
+                && echo "bucket {{ .Values.seaweedfs.bucket }} ready" \
+                || { echo "bucket creation failed"; exit 1; }
+{{- end }}

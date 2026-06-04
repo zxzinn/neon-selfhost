@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "neon.fullname" . }}-broker
+  labels:
+    {{- include "neon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: broker
+  ports:
+    - name: grpc
+      port: {{ .Values.broker.port }}
+      targetPort: {{ .Values.broker.port }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "neon.fullname" . }}-broker
+  labels:
+    {{- include "neon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: broker
+  template:
+    metadata:
+      labels:
+        {{- include "neon.labels" . | nindent 8 }}
+        app.kubernetes.io/component: broker
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: broker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - storage_broker
+            - --listen-addr=0.0.0.0:{{ .Values.broker.port }}
+          ports:
+            - containerPort: {{ .Values.broker.port }}
+              name: grpc

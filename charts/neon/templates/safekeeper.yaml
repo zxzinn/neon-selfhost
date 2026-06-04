@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "neon.fullname" . }}-safekeeper
+  labels:
+    {{- include "neon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: safekeeper
+spec:
+  # headless: gives each replica a stable per-pod DNS name used by
+  # neon.safekeepers (sk-N.<svc>.<ns>.svc.cluster.local).
+  clusterIP: None
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: safekeeper
+  ports:
+    - name: pg
+      port: {{ .Values.safekeeper.pgPort }}
+      targetPort: {{ .Values.safekeeper.pgPort }}
+    - name: http
+      port: {{ .Values.safekeeper.httpPort }}
+      targetPort: {{ .Values.safekeeper.httpPort }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "neon.fullname" . }}-safekeeper
+  labels:
+    {{- include "neon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: safekeeper
+spec:
+  serviceName: {{ include "neon.fullname" . }}-safekeeper
+  replicas: {{ .Values.safekeeper.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: safekeeper
+  template:
+    metadata:
+      labels:
+        {{- include "neon.labels" . | nindent 8 }}
+        app.kubernetes.io/component: safekeeper
+    spec:
+      securityContext:
+        fsGroup: 1000
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: safekeeper
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # SAFEKEEPER_ID and advertise host derive from the stable pod ordinal.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              ORD="${HOSTNAME##*-}"
+              ID="$((ORD + 1))"
+              ADVERTISE="${HOSTNAME}.{{ include "neon.fullname" . }}-safekeeper.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.safekeeper.pgPort }}"
+              exec safekeeper \
+                --listen-pg="0.0.0.0:{{ .Values.safekeeper.pgPort }}" \
+                --advertise-pg="${ADVERTISE}" \
+                --listen-http="0.0.0.0:{{ .Values.safekeeper.httpPort }}" \
+                --id="${ID}" \
+                --broker-endpoint="http://{{ include "neon.fullname" . }}-broker:{{ .Values.broker.port }}" \
+                -D /data \
+                --remote-storage="{ endpoint='{{ include "neon.s3.endpoint" . }}', bucket_name='{{ include "neon.s3.bucket" . }}', bucket_region='{{ .Values.s3.region }}', prefix_in_bucket='/safekeeper/' }"
+          envFrom:
+            - secretRef:
+                name: {{ include "neon.fullname" . }}-s3
+          ports:
+            - containerPort: {{ .Values.safekeeper.pgPort }}
+              name: pg
+            - containerPort: {{ .Values.safekeeper.httpPort }}
+              name: http
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          {{- with .Values.safekeeper.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- include "neon.storageClass" . | nindent 8 }}
+        resources:
+          requests:
+            storage: {{ .Values.safekeeper.storage }}

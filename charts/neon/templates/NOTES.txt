@@ -1,0 +1,33 @@
+Neon storage stack "{{ .Release.Name }}" installed in namespace "{{ .Release.Namespace }}".
+
+Components:
+  - pageserver  ({{ .Values.pageserver.replicas }} replica)
+  - safekeeper  ({{ .Values.safekeeper.replicas }} replicas)
+  - broker
+{{- if .Values.seaweedfs.enabled }}
+  - seaweedfs   (in-chart S3)
+{{- else }}
+  - external S3 ({{ .Values.s3.endpoint }})
+{{- end }}
+
+1. Wait until pods are Ready:
+
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }} -w
+
+2. Port-forward the pageserver HTTP API (the CLI talks to this):
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "neon.fullname" . }}-pageserver {{ .Values.pageserver.httpPort }}:{{ .Values.pageserver.httpPort }}
+
+3. Bootstrap the tenant + root timeline (once per fresh stack):
+
+  neon-selfhost init --pageserver http://localhost:{{ .Values.pageserver.httpPort }}
+
+4. Create branches with the CLI (k8s backend):
+
+  neon-selfhost branch create my-branch \
+    --backend k8s \
+    --namespace {{ .Release.Namespace }} \
+    --pageserver http://localhost:{{ .Values.pageserver.httpPort }} \
+    --pageserver-host {{ include "neon.pageserver.host" . }} \
+    --safekeepers '{{ include "neon.safekeepers" . }}' \
+    --image <your-self-contained-compute-image>

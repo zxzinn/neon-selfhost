@@ -1,0 +1,126 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "neon.fullname" . }}-pageserver
+  labels:
+    {{- include "neon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pageserver
+data:
+  identity.toml: |
+    id=1234
+  pageserver.toml: |
+    id=1234
+    broker_endpoint='http://{{ include "neon.fullname" . }}-broker:{{ .Values.broker.port }}'
+    pg_distrib_dir='/usr/local/'
+    listen_pg_addr='0.0.0.0:{{ .Values.pageserver.pgPort }}'
+    listen_http_addr='0.0.0.0:{{ .Values.pageserver.httpPort }}'
+    remote_storage={ endpoint='{{ include "neon.s3.endpoint" . }}', bucket_name='{{ include "neon.s3.bucket" . }}', bucket_region='{{ .Values.s3.region }}', prefix_in_bucket='/pageserver' }
+    control_plane_api='http://0.0.0.0:6666'
+    control_plane_emergency_mode=true
+    virtual_file_io_mode="buffered"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "neon.fullname" . }}-pageserver
+  labels:
+    {{- include "neon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pageserver
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: pageserver
+  ports:
+    - name: http
+      port: {{ .Values.pageserver.httpPort }}
+      targetPort: {{ .Values.pageserver.httpPort }}
+    - name: pg
+      port: {{ .Values.pageserver.pgPort }}
+      targetPort: {{ .Values.pageserver.pgPort }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "neon.fullname" . }}-pageserver
+  labels:
+    {{- include "neon.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pageserver
+spec:
+  serviceName: {{ include "neon.fullname" . }}-pageserver
+  replicas: {{ .Values.pageserver.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: pageserver
+  template:
+    metadata:
+      labels:
+        {{- include "neon.labels" . | nindent 8 }}
+        app.kubernetes.io/component: pageserver
+      annotations:
+        checksum/config: {{ .Values | toJson | sha256sum }}
+    spec:
+      securityContext:
+        fsGroup: 1000
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # Seed config files into the data dir. pageserver writes alongside them,
+        # so they must be real files in the PVC, not read-only subPath mounts.
+        - name: init-config
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /data/.neon
+              cp /config/identity.toml /data/.neon/identity.toml
+              cp /config/pageserver.toml /data/.neon/pageserver.toml
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /config
+      containers:
+        - name: pageserver
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - pageserver
+            - -D
+            - /data/.neon
+          envFrom:
+            - secretRef:
+                name: {{ include "neon.fullname" . }}-s3
+          ports:
+            - containerPort: {{ .Values.pageserver.httpPort }}
+              name: http
+            - containerPort: {{ .Values.pageserver.pgPort }}
+              name: pg
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          {{- with .Values.pageserver.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "neon.fullname" . }}-pageserver
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- include "neon.storageClass" . | nindent 8 }}
+        resources:
+          requests:
+            storage: {{ .Values.pageserver.storage }}
