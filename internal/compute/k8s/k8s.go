@@ -28,6 +28,10 @@ const (
 	labelBranch  = "neon-selfhost/branch"
 )
 
+// computePGPort is the postgres port the compute container listens on,
+// matching the docker compute wrapper's fixed port.
+const computePGPort = 55433
+
 // Config configures the k8s backend.
 type Config struct {
 	Namespace string // namespace to create computes in
@@ -92,7 +96,7 @@ func (b *Backend) Start(ctx context.Context, s compute.Spec) error {
 							{Name: "PAGESERVER_HOST", Value: b.cfg.PageserverHost},
 							{Name: "SAFEKEEPERS", Value: b.cfg.Safekeepers},
 						},
-						Ports: []corev1.ContainerPort{{ContainerPort: 55433, Name: "postgres"}},
+						Ports: []corev1.ContainerPort{{ContainerPort: computePGPort, Name: "postgres"}},
 					}},
 				},
 			},
@@ -106,7 +110,7 @@ func (b *Backend) Start(ctx context.Context, s compute.Spec) error {
 			Ports: []corev1.ServicePort{{
 				Name:       "postgres",
 				Port:       5432,
-				TargetPort: intstr.FromInt32(55433),
+				TargetPort: intstr.FromInt32(computePGPort),
 			}},
 		},
 	}

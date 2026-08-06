@@ -3,11 +3,14 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
 	"github.com/zxzinn/neon-selfhost/internal/compute"
+	"github.com/zxzinn/neon-selfhost/internal/compute/k8s"
 	"github.com/zxzinn/neon-selfhost/internal/pageserver"
 	"github.com/zxzinn/neon-selfhost/internal/state"
 )
@@ -23,7 +26,7 @@ func branchCmd() *cobra.Command {
 		Use:   "branch",
 		Short: "Manage branches",
 	}
-	c.AddCommand(branchCreateCmd(), branchListCmd(), branchDeleteCmd())
+	c.AddCommand(branchCreateCmd(), branchListCmd(), branchDeleteCmd(), branchConnectCmd())
 	return c
 }
 
@@ -186,6 +189,60 @@ func branchDeleteCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func branchConnectCmd() *cobra.Command {
+	var port int
+	c := &cobra.Command{
+		Use:   "connect <name>",
+		Short: "Forward a local port to a branch's compute (k8s backend only, blocks until interrupted)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if backendName != "k8s" {
+				return fmt.Errorf("connect is only needed for --backend k8s (docker backend already binds a host port)")
+			}
+			name := args[0]
+			tenant, err := resolveTenant()
+			if err != nil {
+				return err
+			}
+			st, err := state.Load()
+			if err != nil {
+				return err
+			}
+			timeline := name
+			if b, ok := st.Get(tenant, name); ok {
+				timeline = b.TimelineID
+			}
+			if port == 0 {
+				port, err = st.AllocPort(portBase, portSpan)
+				if err != nil {
+					return err
+				}
+			}
+
+			restConfig, err := k8s.RESTConfig(kubeconfig)
+			if err != nil {
+				return fmt.Errorf("k8s: %w", err)
+			}
+			cs, err := k8s.NewClientset(kubeconfig)
+			if err != nil {
+				return fmt.Errorf("k8s: %w", err)
+			}
+			be := k8s.New(cs, k8s.Config{Namespace: namespace, Image: image, PGVersion: pgVersion, PageserverHost: pageserverHost, Safekeepers: safekeepers})
+
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			readyCh := make(chan struct{})
+			go func() {
+				<-readyCh
+				fmt.Printf("connected: psql -h localhost -p %d -U cloud_admin -d postgres\n", port)
+			}()
+			return be.PortForward(ctx, restConfig, timeline, port, readyCh, ctx.Done(), os.Stdout, os.Stderr)
+		},
+	}
+	c.Flags().IntVar(&port, "port", 0, "local port to forward to (default: auto-allocate)")
+	return c
 }
 
 // resolveAncestor maps --from <name> to a timeline id, or finds root/main.
