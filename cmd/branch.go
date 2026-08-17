@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 
@@ -12,8 +13,38 @@ import (
 	"github.com/zxzinn/neon-selfhost/internal/compute"
 	"github.com/zxzinn/neon-selfhost/internal/compute/k8s"
 	"github.com/zxzinn/neon-selfhost/internal/pageserver"
+	"github.com/zxzinn/neon-selfhost/internal/safekeeper"
 	"github.com/zxzinn/neon-selfhost/internal/state"
 )
+
+// safekeeperHTTPClients builds one HTTP client per URL in the
+// --safekeeper-http-urls flag (comma-separated, e.g.
+// "http://localhost:27676,http://localhost:27677,http://localhost:27678").
+// Deliberately a separate flag from --safekeepers: that one carries the
+// in-cluster host:port (PG wire protocol, port 5454) handed to computes over
+// pod-to-pod networking, which the CLI process itself typically cannot dial
+// (the k8s backend's own safekeepers are on a headless Service with
+// ...svc.cluster.local names, unreachable from outside the cluster — the
+// CLI is normally run from a bastion/laptop with only the pageserver
+// port-forwarded). Reaching a safekeeper's HTTP API (port 7676) for cleanup
+// requires the caller to have already arranged a path to it (e.g. one
+// port-forward per safekeeper) and pass the resulting localhost URLs here.
+// Returns nil if the flag is unset — callers must treat that as "can't
+// reach safekeepers, skip" rather than an error, so branch delete keeps
+// working for anyone who hasn't wired up the extra port-forwards.
+func safekeeperHTTPClients() []*safekeeper.Client {
+	if safekeeperHTTPURLs == "" {
+		return nil
+	}
+	var clients []*safekeeper.Client
+	for _, url := range strings.Split(safekeeperHTTPURLs, ",") {
+		if url == "" {
+			continue
+		}
+		clients = append(clients, safekeeper.New(url))
+	}
+	return clients
+}
 
 // port range for auto-allocated branch computes.
 const (
@@ -180,6 +211,20 @@ func branchDeleteCmd() *cobra.Command {
 			_ = be.Stop(cmd.Context(), timeline)
 			if err := psClient().DeleteBranch(tenant, timeline); err != nil {
 				return err
+			}
+			// The pageserver only owns timeline metadata; each safekeeper in
+			// the quorum independently persists the timeline's WAL and is
+			// not notified by the pageserver delete above. Skipping this
+			// leaves an orphaned WAL directory per safekeeper forever — this
+			// is what filled all three safekeepers' 5Gi volumes to 100% on
+			// 2026-08-17 after ~60 failed refresh-golden runs each left one
+			// behind. Best-effort: pageserver deletion already happened and
+			// is not reversible, so a safekeeper failure is reported but
+			// does not fail the command.
+			for _, sk := range safekeeperHTTPClients() {
+				if err := sk.DeleteTimeline(tenant, timeline); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: %v (safekeeper WAL for this timeline may be orphaned)\n", err)
+				}
 			}
 			st.Remove(tenant, name)
 			if err := st.Save(); err != nil {
