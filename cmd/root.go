@@ -26,6 +26,13 @@ var (
 	namespace      string
 	pageserverHost string
 	safekeepers    string
+
+	// safekeeperHTTPURLs is comma-separated safekeeper HTTP API URLs
+	// (e.g. "http://localhost:27676,..."), used only by `branch delete` to
+	// clean up each safekeeper's WAL directory for the deleted timeline.
+	// Optional and independent of --safekeepers; see safekeeperHTTPClients
+	// in branch.go for why the two can't share one flag.
+	safekeeperHTTPURLs string
 )
 
 // version info, injected from main via SetVersion.
@@ -58,6 +65,7 @@ func rootCmd() *cobra.Command {
 	pf.StringVar(&namespace, "namespace", "default", "namespace for computes (k8s backend)")
 	pf.StringVar(&pageserverHost, "pageserver-host", "pageserver.neon.svc.cluster.local", "in-cluster pageserver host (k8s backend)")
 	pf.StringVar(&safekeepers, "safekeepers", "", "comma-separated safekeeper list, host:port (k8s backend)")
+	pf.StringVar(&safekeeperHTTPURLs, "safekeeper-http-urls", "", "comma-separated safekeeper HTTP API URLs, e.g. http://localhost:27676,... (branch delete only; cleans up orphaned WAL on each safekeeper)")
 
 	root.AddCommand(initCmd(), branchCmd())
 	return root
